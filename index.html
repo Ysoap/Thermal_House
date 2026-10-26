@@ -152,7 +152,11 @@
   $("kode").addEventListener("keydown", (e) => { if (e.key === "Enter") pasang(); });
 
   // Kode awal: dari ?kode=... di URL, atau yang tersimpan sebelumnya
-  let awal = new URLSearchParams(location.search).get("kode") || "";
+  // Kode tetap: isi sama persis dengan KODE_UNIK di sketch ESP32.
+  // Kalau diisi, halaman selalu memakai kode ini. Kosongkan ("") untuk kembali ke mode manual.
+  const KODE_TETAP = "";
+
+  let awal = KODE_TETAP || new URLSearchParams(location.search).get("kode") || "";
   if (!awal) { try { awal = localStorage.getItem("th-kode") || ""; } catch (e) {} }
   if (awal) { $("kode").value = awal; pasang(); }
 </script>
