@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ThermalHouse</title>
+<style>
+  :root {
+    --bg:#f3f5f4; --card:#ffffff; --ink:#16231f; --muted:#5d6b66; --line:#d5ddd9;
+    --aman:#1f8a4c; --siaga:#c98a00; --bahaya:#c62f2f; --idle:#8a9690;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#101614; --card:#18211e; --ink:#e6eee9; --muted:#93a39b; --line:#2a3732;
+            --aman:#3ec27a; --siaga:#e8b13a; --bahaya:#ee5c5c; --idle:#6b7a73; }
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink);
+         font:16px/1.5 "Segoe UI", system-ui, sans-serif; }
+  main { max-width:760px; margin:0 auto; padding:24px 16px 48px; }
+  header { display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap; }
+  h1 { font-size:1.4rem; margin:0; }
+  .conn { font-size:.85rem; color:var(--muted); }
+  .dot { display:inline-block; width:9px; height:9px; border-radius:50%; background:var(--idle); margin-right:6px; }
+  .dot.on { background:var(--aman); }
+  .kode { margin:16px 0; display:flex; gap:8px; flex-wrap:wrap; }
+  .kode input { flex:1; min-width:160px; padding:9px 12px; border:1px solid var(--line);
+                border-radius:8px; background:var(--card); color:var(--ink); font:inherit; }
+  .kode button { padding:9px 16px; border:0; border-radius:8px; background:var(--ink); color:var(--bg);
+                 font:inherit; cursor:pointer; }
+  button:focus-visible, input:focus-visible { outline:2px solid var(--aman); outline-offset:2px; }
+  .status { border-radius:14px; padding:22px 24px; color:#fff; background:var(--idle); margin-bottom:16px; }
+  .status.AMAN { background:var(--aman); } .status.SIAGA { background:var(--siaga); color:#1c1400; }
+  .status.BAHAYA { background:var(--bahaya); }
+  .status b { display:block; font-size:2.2rem; line-height:1.1; letter-spacing:.02em; }
+  .status span { font-size:.9rem; opacity:.9; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(200px,1fr)); gap:12px; }
+  .card { background:var(--card); border:1px solid var(--line); border-left:6px solid var(--idle);
+          border-radius:10px; padding:14px 16px; }
+  .card.lv0 { border-left-color:var(--aman); } .card.lv1 { border-left-color:var(--siaga); }
+  .card.lv2 { border-left-color:var(--bahaya); }
+  .card small { color:var(--muted); }
+  .card .v { font-size:2rem; font-weight:600; font-variant-numeric:tabular-nums; }
+  .card .v i { font-style:normal; font-size:1rem; color:var(--muted); font-weight:400; margin-left:4px; }
+  .note { margin-top:16px; font-size:.9rem; color:var(--muted); }
+  .note p { margin:4px 0; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>ThermalHouse</h1>
+    <div class="conn"><span class="dot" id="dot"></span><span id="conn">Belum tersambung</span></div>
+  </header>
+
+  <div class="kode">
+    <input id="kode" placeholder="Masukkan kode unik perangkat, mis. TH-7f3a9c" autocomplete="off" spellcheck="false">
+    <button id="pasang">Sambungkan</button>
+  </div>
+
+  <div class="status" id="status"><b id="stText">Menunggu data</b><span id="stSub">Masukkan kode perangkat untuk mulai.</span></div>
+
+  <div class="grid">
+    <div class="card" id="c-suhu"><small>Suhu</small><div class="v"><span id="v-suhu">--</span><i>°C</i></div></div>
+    <div class="card" id="c-hum"><small>Kelembapan</small><div class="v"><span id="v-hum">--</span><i>%</i></div></div>
+    <div class="card" id="c-tekanan"><small>Tekanan udara</small><div class="v"><span id="v-tekanan">--</span><i>hPa</i></div></div>
+  </div>
+
+  <div class="note">
+    <p id="device">Perangkat: belum ada kabar</p>
+    <p id="last">Data terakhir: -</p>
+    <p id="alert">Peringatan terakhir: -</p>
+  </div>
+</main>
+
+<script src="https://cdn.jsdelivr.net/npm/mqtt@5.10.1/dist/mqtt.min.js"></script>
+<script>
+  // Broker publik EMQX lewat WebSocket aman (wajib wss:// karena Vercel memakai HTTPS)
+  const BROKER = "wss://broker.emqx.io:8084/mqtt";
+  const $ = (id) => document.getElementById(id);
+  let client = null;
+  let kode = "";
+
+  const clock = () => new Date().toLocaleTimeString("id-ID");
+
+  function setConn(ok, text) {
+    $("dot").classList.toggle("on", ok);
+    $("conn").textContent = text;
+  }
+
+  function setLevel(id, lv) {
+    const el = $("c-" + id);
+    el.classList.remove("lv0", "lv1", "lv2");
+    if (lv === 0 || lv === 1 || lv === 2) el.classList.add("lv" + lv);
+  }
+
+  function tampilData(d) {
+    $("v-suhu").textContent = Number(d.suhu).toFixed(1);
+    $("v-hum").textContent = Number(d.hum).toFixed(1);
+    $("v-tekanan").textContent = Number(d.tekanan).toFixed(1);
+    if (d.lv) { setLevel("suhu", d.lv.suhu); setLevel("hum", d.lv.hum); setLevel("tekanan", d.lv.tekanan); }
+    const st = ["AMAN", "SIAGA", "BAHAYA"].includes(d.status) ? d.status : "";
+    $("status").className = "status " + st;
+    $("stText").textContent = st || "Tidak dikenal";
+    $("stSub").textContent = { AMAN: "Semua parameter dalam batas aman",
+      SIAGA: "Beberapa parameter melewati batas waspada",
+      BAHAYA: "Ada parameter yang menyentuh batas bahaya" }[st] || "";
+    $("last").textContent = "Data terakhir: " + clock();
+  }
+
+  function sambung(k) {
+    if (client) client.end(true);
+    kode = k;
+    setConn(false, "Menyambung ke broker...");
+    client = mqtt.connect(BROKER, {
+      clientId: "web-" + Math.random().toString(16).slice(2, 10),
+      reconnectPeriod: 3000, connectTimeout: 10000
+    });
+    client.on("connect", () => {
+      setConn(true, "Tersambung ke broker");
+      client.subscribe("thermalhouse/" + kode + "/#");
+    });
+    client.on("reconnect", () => setConn(false, "Menyambung ulang..."));
+    client.on("offline", () => setConn(false, "Putus dari broker"));
+    client.on("message", (topic, payload) => {
+      const jenis = topic.split("/").pop();
+      const teks = payload.toString();
+      if (jenis === "online") {
+        $("device").textContent = "Perangkat: " + (teks === "online" ? "online" : "offline");
+        return;
+      }
+      let d;
+      try { d = JSON.parse(teks); } catch (e) { return; }
+      if (jenis === "data") tampilData(d);
+      if (jenis === "alert") {
+        $("alert").textContent = "Peringatan terakhir: status " + d.status + " pada " + clock() +
+          " (suhu " + d.suhu + " °C, kelembapan " + d.hum + " %, tekanan " + d.tekanan + " hPa)";
+      }
+    });
+  }
+
+  function pasang() {
+    const k = $("kode").value.trim().replace(/[^A-Za-z0-9_-]/g, "");
+    if (!k) { $("kode").focus(); return; }
+    try { localStorage.setItem("th-kode", k); } catch (e) {}
+    history.replaceState(null, "", "?kode=" + encodeURIComponent(k));
+    $("stText").textContent = "Menunggu data";
+    $("stSub").textContent = "Tersambung, menunggu kiriman dari perangkat...";
+    sambung(k);
+  }
+
+  $("pasang").addEventListener("click", pasang);
+  $("kode").addEventListener("keydown", (e) => { if (e.key === "Enter") pasang(); });
+
+  // Kode awal: dari ?kode=... di URL, atau yang tersimpan sebelumnya
+  let awal = new URLSearchParams(location.search).get("kode") || "";
+  if (!awal) { try { awal = localStorage.getItem("th-kode") || ""; } catch (e) {} }
+  if (awal) { $("kode").value = awal; pasang(); }
+</script>
+</body>
+</html>
